@@ -9,8 +9,9 @@
     }
   ],
   "dependencies": ["bluetooth_adapters"],
-  "documentation": "https://github.com/tvde/watergenius-ha",
+  "documentation": "https://github.com/tvdeynde/watergenius-ha",
   "integration_type": "device",
+  "issue_tracker": "https://github.com/tvdeynde/watergenius-ha/issues",
   "iot_class": "local_polling",
   "requirements": ["pycryptodome>=3.19.0"],
   "version": "0.1.0"
