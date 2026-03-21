@@ -3,11 +3,6 @@
   "name": "WaterGenius Water Softener",
   "codeowners": ["@tvde"],
   "config_flow": true,
-  "bluetooth": [
-    {
-      "service_uuid": "00010203-0405-0607-0809-0a0b0c0d1910"
-    }
-  ],
   "dependencies": ["bluetooth_adapters"],
   "documentation": "https://github.com/tvdeynde/watergenius-ha",
   "integration_type": "device",

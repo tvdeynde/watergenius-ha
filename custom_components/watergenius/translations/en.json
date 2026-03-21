@@ -3,9 +3,16 @@
     "step": {
       "user": {
         "title": "WaterGenius Water Softener",
-        "description": "Select your WaterGenius device from the list of discovered Bluetooth devices.",
+        "description": "Select your WaterGenius device from the list below, or choose manual entry if your device is not listed.",
         "data": {
           "device_address": "Device"
+        }
+      },
+      "manual": {
+        "title": "Manual Device Entry",
+        "description": "Enter the Bluetooth MAC address of your WaterGenius device (e.g. {example}). You can find this in your phone's Bluetooth settings while connected to the device.",
+        "data": {
+          "device_address": "Bluetooth MAC Address"
         }
       },
       "mesh_credentials": {
@@ -20,7 +27,8 @@
     "error": {
       "cannot_connect": "Failed to connect to device",
       "no_devices_found": "No WaterGenius devices found nearby",
-      "pairing_failed": "Failed to pair with device. Check mesh credentials."
+      "pairing_failed": "Failed to pair with device. Check mesh credentials.",
+      "invalid_address": "Invalid Bluetooth MAC address"
     },
     "abort": {
       "already_configured": "Device is already configured"

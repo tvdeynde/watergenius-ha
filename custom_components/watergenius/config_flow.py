@@ -25,6 +25,42 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# Known device name patterns for WaterGenius / Gizwits Telink mesh devices
+_KNOWN_NAME_PREFIXES = (
+    "watergenius",
+    "water genius",
+    "telink",
+    "gizwits",
+    "xb_",
+    "mesh",
+    "out_of_mesh",
+)
+
+# Manual entry sentinel
+_MANUAL_ENTRY = "__manual__"
+
+
+def _is_potential_watergenius(info: BluetoothServiceInfoBleak) -> bool:
+    """Check if a discovered BLE device could be a WaterGenius device.
+
+    Matches on:
+    1. Service UUID (if the device advertises it)
+    2. Device name containing known prefixes
+    3. Any device advertising the Telink mesh service UUID
+    """
+    # Check service UUIDs
+    if SERVICE_UUID.lower() in [s.lower() for s in info.service_uuids]:
+        return True
+
+    # Check device name
+    name = (info.name or "").lower().strip()
+    if name:
+        for prefix in _KNOWN_NAME_PREFIXES:
+            if prefix in name:
+                return True
+
+    return False
+
 
 class WaterGeniusConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for WaterGenius."""
@@ -43,25 +79,24 @@ class WaterGeniusConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            self._selected_address = user_input[CONF_DEVICE_ADDRESS]
+            selected = user_input[CONF_DEVICE_ADDRESS]
+            if selected == _MANUAL_ENTRY:
+                return await self.async_step_manual()
+            self._selected_address = selected
             return await self.async_step_mesh_credentials()
 
-        # Discover WaterGenius BLE devices
+        # Discover potential WaterGenius BLE devices
         self._discovered_devices = {}
         for info in async_discovered_service_info(self.hass, connectable=True):
-            if SERVICE_UUID.lower() in [
-                s.lower() for s in info.service_uuids
-            ]:
+            if _is_potential_watergenius(info):
                 self._discovered_devices[info.address] = info
 
-        if not self._discovered_devices:
-            return self.async_abort(reason="no_devices_found")
-
-        # Build selection list
+        # Build selection list — always include manual entry option
         device_options = {
-            addr: f"{info.name or 'WaterGenius'} ({addr})"
+            addr: f"{info.name or 'Unknown'} ({addr})"
             for addr, info in self._discovered_devices.items()
         }
+        device_options[_MANUAL_ENTRY] = "Enter address manually..."
 
         return self.async_show_form(
             step_id="user",
@@ -71,6 +106,38 @@ class WaterGeniusConfigFlow(ConfigFlow, domain=DOMAIN):
                 }
             ),
             errors=errors,
+        )
+
+    async def async_step_manual(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle manual BLE address entry."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            address = user_input[CONF_DEVICE_ADDRESS].strip().upper()
+            # Basic MAC address validation
+            if len(address.replace(":", "").replace("-", "")) != 12:
+                errors[CONF_DEVICE_ADDRESS] = "invalid_address"
+            else:
+                # Normalize to colon-separated format
+                raw = address.replace(":", "").replace("-", "")
+                self._selected_address = ":".join(
+                    raw[i : i + 2] for i in range(0, 12, 2)
+                )
+                return await self.async_step_mesh_credentials()
+
+        return self.async_show_form(
+            step_id="manual",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_DEVICE_ADDRESS): str,
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "example": "AA:BB:CC:DD:EE:FF",
+            },
         )
 
     async def async_step_bluetooth(
