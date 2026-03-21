@@ -1,0 +1,29 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "WaterGenius Water Softener",
+        "description": "Select your WaterGenius device from the list of discovered Bluetooth devices.",
+        "data": {
+          "device_address": "Device"
+        }
+      },
+      "mesh_credentials": {
+        "title": "Mesh Credentials",
+        "description": "Enter the Telink mesh credentials. The defaults work for most WaterGenius devices.",
+        "data": {
+          "mesh_name": "Mesh Name",
+          "mesh_password": "Mesh Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to device",
+      "no_devices_found": "No WaterGenius devices found nearby",
+      "pairing_failed": "Failed to pair with device. Check mesh credentials."
+    },
+    "abort": {
+      "already_configured": "Device is already configured"
+    }
+  }
+}
