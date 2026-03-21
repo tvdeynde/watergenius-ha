@@ -2,11 +2,11 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 
-A custom [Home Assistant](https://www.home-assistant.io/) integration for **WaterGenius water softener** devices. Connects directly over **Bluetooth Low Energy (BLE)** using the Telink mesh protocol to read sensor data and control your water softener.
+A custom [Home Assistant](https://www.home-assistant.io/) integration for **WaterGenius water softener** devices. Connects directly over **Bluetooth Low Energy (BLE)** using the Gizwits GAgent protocol to read sensor data and control your water softener.
 
 ## Features
 
-- **Automatic BLE discovery** — WaterGenius devices are detected automatically when in Bluetooth range
+- **Automatic BLE discovery** — WaterGenius devices (advertising as `XPG-GAgent-xxxx`) are detected automatically when in Bluetooth range
 - **17 sensor entities** — water hardness (in/out), flow rate, remaining capacity, salt level, regeneration status, water usage statistics, and more
 - **2 binary sensors** — alarm status and regeneration activity
 - **2 action buttons** — trigger immediate or scheduled regeneration
@@ -40,15 +40,22 @@ A custom [Home Assistant](https://www.home-assistant.io/) integration for **Wate
 
 1. Go to **Settings → Devices & Services → Add Integration**
 2. Search for **WaterGenius**
-3. Select your device from the list of discovered Bluetooth devices
-4. Confirm the mesh credentials (defaults work for most devices)
+3. Select your device from the list of discovered Bluetooth devices — it will appear as `XPG-GAgent-xxxx`
+4. If your device is not listed, choose **"Enter address manually..."** and enter the Bluetooth MAC address
 5. The integration will create a device with all entities
 
 If no devices are found, make sure:
 - The device is powered on
-- The WaterGenius phone app is closed (BLE allows only one connection)
+- The WaterGenius phone app is fully closed (BLE allows only one connection at a time)
 - Your HA host has a working Bluetooth adapter
 - The device is within Bluetooth range
+
+### Finding the MAC address
+
+If you need to enter the address manually:
+- Check the WaterGenius phone app (device info/settings)
+- Look in your phone's Bluetooth settings while connected to the device
+- The device advertises as `XPG-GAgent-xxxx` where `xxxx` is the last 4 characters of the MAC
 
 ## Entities
 
@@ -104,42 +111,60 @@ The **Daily Water Usage Detail** sensor includes extra attributes with historica
 
 ### Protocol Stack
 
-The WaterGenius device communicates using a layered protocol:
+The WaterGenius device communicates using the Gizwits GAgent BLE protocol:
 
 ```
 ┌─────────────────────────────────┐
 │   Gizwits Data Points           │  ← Named data points (hardness, flow, etc.)
 ├─────────────────────────────────┤
-│   Telink Mesh Protocol          │  ← AES-128 encrypted mesh commands
+│   Gizwits GAgent Protocol       │  ← Framed serial protocol over BLE SPP
 ├─────────────────────────────────┤
 │   Bluetooth Low Energy (BLE)    │  ← Physical transport (bleak library)
 └─────────────────────────────────┘
 ```
 
-### BLE Characteristics
+### BLE Service and Characteristics
+
+The device uses the Gizwits BLE SPP (Serial Port Profile) service:
 
 | Characteristic | UUID | Purpose |
 |---|---|---|
-| Service | `00010203-0405-0607-0809-0a0b0c0d1910` | Main mesh service |
-| Notify | `...1911` | Receive status updates from device |
-| Command | `...1912` | Send commands to device |
-| Pair | `...1914` | Session key exchange during pairing |
+| Service | `0000ABF0-0000-1000-8000-00805F9B34FB` | Gizwits BLE SPP service |
+| Write | `0000ABF1-...` | Send commands to device |
+| Notify | `0000ABF2-...` | Receive status updates from device |
+
+### Protocol Framing
+
+Each packet uses this format:
+
+```
+| header (0xFFFF) | length (2B) | cmd (1B) | sn (1B) | flags (2B) | payload (NB) | checksum (1B) |
+```
+
+Key commands:
+- `0x03` — Control (write data points)
+- `0x05` — Status report (device sends all data points)
+- `0x07` / `0x08` — Heartbeat ping/ACK
+
+The protocol is **unencrypted** — no pairing or authentication is needed beyond the BLE connection itself.
 
 ### Connection Flow
 
-1. **Discovery** — HA's Bluetooth integration detects the device by its service UUID
-2. **Pairing** — AES-128 session key exchange using mesh name and password
-3. **Subscription** — Subscribe to BLE notifications for real-time data updates
-4. **Polling** — Periodic status requests every 60 seconds as a safety net
+1. **Discovery** — HA detects the device by its service UUID (`0xABF0`) or name (`XPG-GAgent-xxxx`)
+2. **Connect** — Standard BLE GATT connection (no encryption or pairing needed)
+3. **Subscribe** — Enable notifications on characteristic `0xABF2`
+4. **Heartbeat** — Send a ping to verify communication
+5. **Poll** — Request status every 60 seconds; device also pushes updates via notifications
 
 ### Reverse Engineering
 
 This integration was built by reverse-engineering the WaterGenius Android APK (v1.0.27). The app is built with React Native on the [Gizwits IoT platform](https://www.gizwits.com/). Key findings:
 
+- The device advertises as `XPG-GAgent-xxxx` with Gizwits manufacturer ID `0x1910`
+- BLE advertisement data contains the product key (`1952e24ea3744832aa55cf9a5050fc6d`)
 - The JavaScript bundle contains all data point definitions (`g_uiHardness`, `g_ucRegenStatus`, etc.)
-- BLE communication uses the Telink mesh protocol with default mesh credentials
-- Data points use big-endian byte encoding (the `bytes2number` / `number2bytes` pattern from the APK)
-- The Telink mesh encryption follows the standard protocol documented in [google/python-dimond](https://github.com/google/python-dimond) and [Leiaz/python-awox-mesh-light](https://github.com/Leiaz/python-awox-mesh-light)
+- Data points use big-endian byte encoding
+- Communication uses the Gizwits GAgent serial protocol over BLE SPP (service `0xABF0`)
 
 ## Troubleshooting
 
@@ -148,11 +173,12 @@ This integration was built by reverse-engineering the WaterGenius Android APK (v
 - Check that your HA host has a working Bluetooth adapter (`bluetoothctl list`)
 - Move the HA host closer to the device (BLE range is ~10m)
 - Check Home Assistant logs for Bluetooth adapter errors
+- Use the manual address entry option if the device doesn't appear in the list
 
-### Pairing fails
-- The default mesh credentials (`telink_mesh1` / `123`) work for most devices
-- If your device has custom mesh settings, enter them during configuration
+### Connection fails
+- Only one BLE client can connect at a time — make sure the phone app is closed
 - Try power-cycling the WaterGenius device
+- Check that no other Bluetooth integration is holding a connection to the device
 
 ### Sensors show "Unknown" or "Unavailable"
 - The data point byte layout may need adjustment for your specific device firmware version
@@ -170,15 +196,15 @@ logger:
     custom_components.watergenius: debug
 ```
 
-This will log raw BLE packets and parsed data point values, which is helpful for diagnosing protocol issues.
+This will log raw BLE packets, parsed protocol frames, and data point values — very helpful for diagnosing issues.
 
 ## Development Status
 
-This integration is in **early development**. The Telink mesh protocol and BLE pairing are well-understood and based on proven open-source implementations. However, the **Gizwits data point encoding over BLE** (the exact byte layout in status notifications) is based on APK analysis and may need adjustment when tested against real hardware.
+This integration is in **early development**. The Gizwits GAgent BLE protocol is well-understood based on the [Gizwits GAgent source code](https://github.com/gizwits/Gizwits-GAgent). However, the **data point byte layout** in status reports is based on APK analysis and may need adjustment when tested against real hardware.
 
 Areas that may need refinement:
-- Data point byte order and offsets in BLE notification payloads
-- Vendor-specific command opcodes for Gizwits data point read/write
+- Data point byte order and offsets in status report payloads
+- Control command encoding (attr_flags and attr_vals format)
 - Handling of array data points (daily/weekly/monthly usage)
 - BLE reconnection reliability
 
@@ -190,5 +216,5 @@ This project is provided as-is for personal use. Not affiliated with or endorsed
 
 ## Credits
 
-- Protocol analysis based on [google/python-dimond](https://github.com/google/python-dimond), [Leiaz/python-awox-mesh-light](https://github.com/Leiaz/python-awox-mesh-light), and [vpaeder/telinkpp](https://github.com/vpaeder/telinkpp)
+- Protocol based on [Gizwits GAgent](https://github.com/gizwits/Gizwits-GAgent) and [Gizwits documentation](https://docs.gizwits.com/)
 - Built for [Home Assistant](https://www.home-assistant.io/)
