@@ -181,7 +181,7 @@ SENSOR_DESCRIPTIONS: tuple[WaterGeniusSensorDescription, ...] = (
         translation_key="regen_time",
         name="Regeneration Time",
         icon="mdi:clock-outline",
-        entity_category=EntityCategory.CONFIG,
+        entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_regen_time_str,
     ),
     WaterGeniusSensorDescription(
@@ -189,7 +189,7 @@ SENSOR_DESCRIPTIONS: tuple[WaterGeniusSensorDescription, ...] = (
         translation_key="alarm_on_time",
         name="Alarm On Time",
         icon="mdi:alarm",
-        entity_category=EntityCategory.CONFIG,
+        entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_alarm_time("g_ucAlarmOnHour", "g_ucAlarmOnMin"),
     ),
     WaterGeniusSensorDescription(
@@ -197,7 +197,7 @@ SENSOR_DESCRIPTIONS: tuple[WaterGeniusSensorDescription, ...] = (
         translation_key="alarm_off_time",
         name="Alarm Off Time",
         icon="mdi:alarm-off",
-        entity_category=EntityCategory.CONFIG,
+        entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_alarm_time("g_ucAlarmOffHour", "g_ucAlarmOffMin"),
     ),
     WaterGeniusSensorDescription(

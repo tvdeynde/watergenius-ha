@@ -231,29 +231,44 @@ class GizwitsBleConnection:
 
     def _handle_notification(self, _sender: int, data: bytearray) -> None:
         """Handle incoming BLE notification."""
-        _LOGGER.debug("BLE notification raw: %s", bytes(data).hex())
+        _LOGGER.info(
+            "BLE notification (%d bytes): %s", len(data), bytes(data).hex()
+        )
+
+        # Short packets (< 4 bytes) - log and skip
+        if len(data) < 4:
+            _LOGGER.debug("Short notification, skipping parse")
+            return
 
         # Handle fragmented packets (Gizwits uses "##" prefix for fragments)
         if len(data) > 2 and data[0:2] == b"##":
-            # Fragmented: data[2] = total fragments, data[3] = current fragment
             total = data[2]
             current = data[3]
             self._receive_buffer.extend(data[4:])
+            _LOGGER.debug("Fragment %d/%d", current + 1, total)
             if current < total - 1:
-                return  # Wait for more fragments
-            # All fragments received
+                return
             data = bytearray(self._receive_buffer)
             self._receive_buffer.clear()
+            _LOGGER.info("Reassembled packet (%d bytes): %s", len(data), bytes(data).hex())
         else:
             self._receive_buffer.clear()
 
         result = _parse_packet(bytes(data))
         if result is None:
-            _LOGGER.debug("Could not parse notification packet")
+            _LOGGER.warning(
+                "Could not parse notification packet: %s", bytes(data).hex()
+            )
             return
 
         cmd, sn, payload = result
-        _LOGGER.debug("Parsed: cmd=0x%02X sn=%d payload=%s", cmd, sn, payload.hex())
+        _LOGGER.info(
+            "Parsed packet: cmd=0x%02X sn=%d payload(%d bytes)=%s",
+            cmd,
+            sn,
+            len(payload),
+            payload.hex(),
+        )
 
         if cmd == CMD_REPORT and len(payload) > 0:
             # Device status report
@@ -299,9 +314,26 @@ class GizwitsBleConnection:
         await self._send_packet(CMD_HEARTBEAT)
 
     async def request_status(self) -> None:
-        """Request the device to report its current status."""
+        """Request the device to report its current status.
+
+        Tries multiple approaches since the exact protocol variant may differ.
+        """
+        # Approach 1: Standard Gizwits status read request
         payload = bytes([ACTION_READ_STATUS])
         await self._send_packet(CMD_CTRL, payload)
+        await asyncio.sleep(0.5)
+
+        # Approach 2: Try reading the characteristic directly
+        if self._client and self._client.is_connected:
+            try:
+                read_data = await self._client.read_gatt_char(self._write_uuid)
+                _LOGGER.info(
+                    "Read from characteristic (%d bytes): %s",
+                    len(read_data),
+                    bytes(read_data).hex(),
+                )
+            except Exception:
+                _LOGGER.debug("Could not read characteristic directly")
 
     async def write_control(self, attr_flags: bytes, attr_vals: bytes) -> None:
         """Send a control command to set data point values.
