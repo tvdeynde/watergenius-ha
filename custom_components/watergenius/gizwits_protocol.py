@@ -302,84 +302,92 @@ class WaterGeniusDeviceData:
 
     @property
     def incoming_hardness(self) -> int | None:
-        return self.get_number("g_uiHardness")
+        return self.get_number("incoming_hardness")
 
     @property
     def outgoing_hardness(self) -> int | None:
-        return self.get_number("g_uiHardnessOut")
+        return self.get_number("outgoing_hardness")
 
     @property
     def hardness_unit_index(self) -> int | None:
-        return self.get_number("g_ucWaterHdUintSetUSER")
+        # TODO: find this in the binary dump
+        return 0  # mg/L for now
 
     @property
     def valve_state(self) -> int | None:
-        return self.get_byte_at("g_ucRegenStatus", 0)
+        return self.get_number("valve_state")
 
     @property
     def regen_countdown(self) -> int | None:
-        """Countdown in seconds (byte value encodes minutes*60 + seconds)."""
-        return self.get_byte_at("g_ucRegenStatus", 1)
+        return None  # TODO: find in binary dump
 
     @property
     def flow_current(self) -> int | None:
-        return self.get_number("g_ulFlowCurrent")
+        return self.get_number("flow_current")
 
     @property
     def remaining_capacity(self) -> int | None:
-        return self.get_number("g_ulRemainCap")
+        return self.get_number("remaining_capacity_l")
+
+    @property
+    def remaining_capacity_pct(self) -> int | None:
+        return self.get_number("remaining_capacity_pct")
+
+    @property
+    def total_capacity(self) -> int | None:
+        return self.get_number("total_capacity")
 
     @property
     def regen_flow_setting(self) -> int | None:
-        return self.get_number("g_ulRegenFlowSet")
+        return None  # TODO: find in binary dump
 
     @property
     def total_hardness_removal(self) -> int | None:
-        return self.get_number("g_ucCaCO3Total")
+        return self.get_number("total_caco3")
 
     @property
     def salt_level(self) -> int | None:
-        return self.get_number("g_ucCurrentSaltLevel")
+        return None  # TODO: find in binary dump
 
     @property
     def days_to_next_regen(self) -> int | None:
-        return self.get_number("g_usEstDaysToNext")
+        return self.get_number("next_regen_days")
 
     @property
     def daily_water_usage_avg(self) -> int | None:
-        return self.get_number("g_uiDailyWaterUsageAvg")
+        return None  # TODO: find in binary dump
 
     @property
     def alarm_active(self) -> bool | None:
-        return self.get_bool("g_ucAlarm")
+        return None  # TODO: find in binary dump
 
     @property
     def regen_enabled(self) -> bool | None:
-        return self.get_bool("g_ucRegenEN")
+        return None  # TODO: find in binary dump
 
     @property
     def is_regenerating(self) -> bool | None:
         vs = self.valve_state
         if vs is None:
             return None
-        return vs != 0
+        return vs != 1  # 1 = in service
 
     @property
     def error_log(self) -> int | None:
-        return self.get_number("g_ulERRLog0")
+        return None  # TODO: find in binary dump
 
     @property
     def daily_usage_2h(self) -> list[int] | None:
-        return self.get_array("g_uiDailyWaterUsage2H_12", 2)
+        return None  # TODO: find in binary dump
 
     @property
     def weekly_flow_avg(self) -> list[int] | None:
-        return self.get_array("g_uiWeekFlowAvg_7", 2)
+        return None
 
     @property
     def monthly_flow_avg(self) -> list[int] | None:
-        return self.get_array("g_uiMonthFlowAvg_4", 2)
+        return None
 
     @property
     def weekly_water_usage(self) -> list[int] | None:
-        return self.get_array("g_uiWeekWaterUsage1_7", 2)
+        return None

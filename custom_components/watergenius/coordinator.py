@@ -19,6 +19,11 @@ from .gizwits_protocol import WaterGeniusDeviceData
 
 _LOGGER = logging.getLogger(__name__)
 
+# The device sends a full data dump ~8s after connecting.
+# We wait up to 12s on first connect to capture it.
+_INITIAL_WAIT = 12
+_POLL_WAIT = 5
+
 
 class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]):
     """Coordinator for polling WaterGenius device data over BLE."""
@@ -42,131 +47,147 @@ class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]
         self._data = WaterGeniusDeviceData()
         self._reconnect_attempts = 0
         self._max_reconnect_attempts = 5
-        self._got_data = False
+        self._first_fetch = True
 
-        # Set up data callback
         self._ble.set_status_callback(self._handle_data_dump)
 
     @property
     def address(self) -> str:
-        """Return the BLE device address."""
         return self._device.address
 
     @property
     def device_name(self) -> str:
-        """Return the device name."""
         return self._device_name
 
     def _handle_data_dump(self, data: bytes) -> None:
-        """Handle incoming data dump from the device.
-
-        The device sends its complete state as a raw binary dump.
-        We need to find the data point values within this dump.
-
-        The exact byte offsets need to be determined by comparing
-        known values from the phone app with the binary data.
-        For now, we log the data for analysis and attempt parsing.
-        """
+        """Handle incoming data dump from the device."""
         _LOGGER.info("Received data dump (%d bytes)", len(data))
-
-        # Try to parse the data dump
         self._parse_data_dump(data)
-        self._got_data = True
-
-        # Schedule HA state update
         self.async_set_updated_data(self._data)
 
     def _parse_data_dump(self, data: bytes) -> None:
-        """Parse the raw binary data dump from the device.
+        """Parse the raw binary data dump.
 
-        The device sends ~900+ bytes containing configuration, status,
-        and historical data. The format is proprietary.
+        The device sends two types of messages:
+        1. Full dump (~845+ bytes): sent ~8s after connection, contains everything
+        2. Periodic update (~42 bytes): sent every ~7s, contains key status values
 
-        Based on log analysis, the dump contains:
-        - Device config (serial, product key, email)
-        - Current sensor values
-        - Historical usage data
-        - Regeneration schedules
+        Byte offsets determined by correlating app values with binary data:
 
-        The exact byte mapping is determined by analyzing dumps with
-        known values from the phone app. This parser will be refined
-        as we identify more data points.
+        FULL DUMP (845+ bytes):
+          Offset 280: remaining_capacity_pct (1 byte, %)
+          Offset 281: current_month (1 byte)
+          Offset 282: current_day (1 byte)
+          Offset 283-284: unknown (2 bytes)
+          Offset 285: next_regen_days (1 byte)
+          Offset 286-287: flow_current (2 bytes, 0 = no flow)
+          Offset 288: incoming_hardness (1 byte, mg/L)
+          Offset 289: padding
+          Offset 290: outgoing_hardness (1 byte, mg/L)
+          Offset 291: unknown
+          Offset 292: valve_state (1 byte, 1=in service)
+          Offset 356-357: unknown (0x0190 = 400)
+          Offset 358-359: unknown (0x00C8 = 200)
+          Offset 366-367: unknown (0x006E = 110)
+          Offset 430-431: total_capacity (2 bytes, L) = 3315
+          Offset 432-433: remaining_capacity_l (2 bytes, L) = 874
+          Offset 434: regen_time_hours? (0x3C = 60)
+          Offset 524-527: total_caco3 (4 bytes, g) = 3308
 
-        For now, we attempt to find known patterns and extract values.
+        PERIODIC UPDATE (42 bytes):
+          Offset 35: remaining_capacity_pct (1 byte, %)
+          Offset 36: current_month (1 byte)
+          Offset 37: current_day (1 byte)
+          Offset 38-39: counter/time (2 bytes)
         """
-        if len(data) < 200:
-            _LOGGER.debug("Data dump too short (%d bytes), skipping", len(data))
-            return
-
-        # Log key sections of the dump for analysis
-        # The data appears to have this rough structure:
-        # Bytes 0-9: Header/version info
-        # Bytes 10-37: 0xFF padding
-        # Bytes 38+: Config data (serial, product key in ASCII)
-        # After product key: Sensor values
-        # Later: Historical data, schedules
-
-        # Find the product key to anchor our position
-        # Product key is stored as ASCII hex in the dump
-        pk_ascii = b"1952e24e"
-        pk_pos = data.find(pk_ascii)
-
-        if pk_pos < 0:
-            # Try the other product key
-            pk_ascii = b"1462685633a0"
-            pk_pos = data.find(pk_ascii)
-
-        if pk_pos >= 0:
-            _LOGGER.info("Found product key at byte offset %d", pk_pos)
-            # The product key is 32 ASCII hex chars = 64 bytes
-            # Data points follow after the product key + some padding
-            after_pk = pk_pos + 64
-
-            if after_pk + 100 <= len(data):
-                sensor_area = data[after_pk:]
-                _LOGGER.info(
-                    "Sensor area (from offset %d, %d bytes): %s",
-                    after_pk,
-                    len(sensor_area),
-                    sensor_area[:200].hex(),
-                )
-                self._try_parse_sensor_area(sensor_area)
+        if len(data) >= 300:
+            self._parse_full_dump(data)
+        elif len(data) >= 40:
+            self._parse_periodic_update(data)
         else:
-            _LOGGER.warning("Could not find product key anchor in data dump")
-            # Try parsing from the start with best-effort offsets
-            self._try_parse_sensor_area(data)
+            _LOGGER.debug("Data too short to parse (%d bytes)", len(data))
 
-    def _try_parse_sensor_area(self, data: bytes) -> None:
-        """Attempt to extract sensor values from the data area.
+    def _parse_full_dump(self, data: bytes) -> None:
+        """Parse the full data dump (~845+ bytes)."""
+        _LOGGER.info("Parsing full data dump (%d bytes)", len(data))
 
-        This is a best-effort parser that will be refined based on
-        comparing values with the phone app. Values are logged for
-        debugging.
+        # Remaining capacity percentage
+        if len(data) > 280:
+            self._data.raw["remaining_capacity_pct"] = bytes([data[280]])
+            _LOGGER.info("  Remaining capacity: %d%%", data[280])
 
-        Based on analysis of the data dump, after the product key
-        there's a section with 2-byte and 4-byte big-endian values
-        that likely correspond to sensor readings.
-        """
-        if len(data) < 50:
-            return
+        # Date
+        if len(data) > 282:
+            _LOGGER.info("  Date: month=%d day=%d", data[281], data[282])
 
-        # Log candidate values at various offsets for manual correlation
-        # with the phone app
-        _LOGGER.info("=== Candidate sensor values (2-byte BE) ===")
-        for i in range(0, min(len(data) - 1, 100), 2):
-            val = int.from_bytes(data[i : i + 2], "big")
-            if 0 < val < 10000:  # Filter out obviously wrong values
-                _LOGGER.info("  offset %3d: %5d (0x%04X)", i, val, val)
+        # Next regeneration days
+        if len(data) > 285:
+            self._data.raw["next_regen_days"] = bytes([data[285]])
+            _LOGGER.info("  Next regen: %d day(s)", data[285])
 
-        _LOGGER.info("=== Candidate sensor values (4-byte BE) ===")
-        for i in range(0, min(len(data) - 3, 100), 4):
-            val = int.from_bytes(data[i : i + 4], "big")
-            if 0 < val < 1000000:
-                _LOGGER.info("  offset %3d: %7d (0x%08X)", i, val, val)
+        # Current flow (2 bytes big-endian)
+        if len(data) > 287:
+            flow = int.from_bytes(data[286:288], "big")
+            self._data.raw["flow_current"] = data[286:288]
+            _LOGGER.info("  Flow: %d", flow)
+
+        # Incoming hardness (1 byte, mg/L)
+        if len(data) > 288:
+            self._data.raw["incoming_hardness"] = bytes([data[288]])
+            _LOGGER.info("  Incoming hardness: %d mg/L", data[288])
+
+        # Outgoing hardness (1 byte, mg/L)
+        if len(data) > 290:
+            self._data.raw["outgoing_hardness"] = bytes([data[290]])
+            _LOGGER.info("  Outgoing hardness: %d mg/L", data[290])
+
+        # Valve state
+        if len(data) > 292:
+            self._data.raw["valve_state"] = bytes([data[292]])
+            _LOGGER.info("  Valve state: %d", data[292])
+
+        # Total capacity (2 bytes at offset 430-431)
+        if len(data) > 431:
+            total_cap = int.from_bytes(data[430:432], "big")
+            self._data.raw["total_capacity"] = data[430:432]
+            _LOGGER.info("  Total capacity: %d L", total_cap)
+
+        # Remaining capacity in liters (2 bytes at offset 432-433)
+        if len(data) > 433:
+            remain_l = int.from_bytes(data[432:434], "big")
+            self._data.raw["remaining_capacity_l"] = data[432:434]
+            _LOGGER.info("  Remaining capacity: %d L", remain_l)
+
+        # Total CaCO3 removed (4 bytes at offset 524-527)
+        if len(data) > 527:
+            caco3 = int.from_bytes(data[524:528], "big")
+            self._data.raw["total_caco3"] = data[524:528]
+            _LOGGER.info("  Total CaCO3: %d g", caco3)
+
+        # Log nearby bytes for discovering more data points
+        _LOGGER.debug("  Bytes 280-300: %s", data[280:300].hex())
+        if len(data) > 440:
+            _LOGGER.debug("  Bytes 425-445: %s", data[425:445].hex())
+        if len(data) > 530:
+            _LOGGER.debug("  Bytes 520-540: %s", data[520:540].hex())
+
+    def _parse_periodic_update(self, data: bytes) -> None:
+        """Parse the periodic status update (~42 bytes)."""
+        _LOGGER.info("Parsing periodic update (%d bytes)", len(data))
+
+        if len(data) > 35:
+            self._data.raw["remaining_capacity_pct"] = bytes([data[35]])
+            _LOGGER.info("  Remaining capacity: %d%%", data[35])
+
+        if len(data) > 37:
+            _LOGGER.info("  Date: month=%d day=%d", data[36], data[37])
+
+        if len(data) > 39:
+            counter = int.from_bytes(data[38:40], "big")
+            _LOGGER.info("  Counter: %d", counter)
 
     async def _async_update_data(self) -> WaterGeniusDeviceData | None:
         """Fetch data from the device via BLE."""
-        # Ensure connection
         if not self._ble.is_connected:
             if self._reconnect_attempts >= self._max_reconnect_attempts:
                 raise UpdateFailed(
@@ -184,10 +205,12 @@ class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]
             self._reconnect_attempts = 0
 
         try:
-            # Request fresh data from device
             await self._ble.request_status()
-            # Wait for the device to send its data dump via notifications
-            await asyncio.sleep(3)
+            # Wait longer on first fetch to capture the full dump
+            wait = _INITIAL_WAIT if self._first_fetch else _POLL_WAIT
+            self._first_fetch = False
+            _LOGGER.debug("Waiting %d seconds for device response", wait)
+            await asyncio.sleep(wait)
         except Exception as err:
             _LOGGER.warning("Error requesting status: %s", err)
             await self._ble.disconnect()
@@ -198,12 +221,7 @@ class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]
         return self._data
 
     async def async_send_command(self, dp_name: str, value: int) -> None:
-        """Send a control command to the device.
-
-        TODO: The exact command format for this device's proprietary
-        protocol needs to be reverse-engineered from the phone app's
-        BLE communication.
-        """
+        """Send a control command to the device."""
         _LOGGER.warning(
             "Control commands not yet implemented for this device protocol"
         )
