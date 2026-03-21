@@ -5,32 +5,44 @@ from __future__ import annotations
 DOMAIN = "watergenius"
 MANUFACTURER = "WaterGenius"
 
-# BLE Service and Characteristic UUIDs (Telink Mesh)
-SERVICE_UUID = "00010203-0405-0607-0809-0a0b0c0d1910"
-PAIR_UUID = "00010203-0405-0607-0809-0a0b0c0d1914"
-COMMAND_UUID = "00010203-0405-0607-0809-0a0b0c0d1912"
-NOTIFY_UUID = "00010203-0405-0607-0809-0a0b0c0d1911"
+# BLE Service and Characteristic UUIDs (Gizwits GAgent BLE SPP)
+SERVICE_UUID = "0000abf0-0000-1000-8000-00805f9b34fb"
+WRITE_UUID = "0000abf1-0000-1000-8000-00805f9b34fb"
+NOTIFY_UUID = "0000abf2-0000-1000-8000-00805f9b34fb"
 
-# Default Telink Mesh credentials (from APK)
-DEFAULT_MESH_NAME = "telink_mesh1"
-DEFAULT_MESH_PASSWORD = "123"
-DEFAULT_MESH_LTK = bytes.fromhex("c0c1c2c3c4c5c6c7d8d9dadbdcdddedf")
-DEFAULT_MESH_VENDOR = 1
+# Gizwits manufacturer ID in BLE advertisements
+GIZWITS_MANUFACTURER_ID = 0x1910
 
-# Gizwits Product Keys
+# Gizwits Product Keys (from APK)
 PRODUCT_KEYS = [
     "1462685633a0472ea32994c3d33b40d8",
     "1952e24ea3744832aa55cf9a5050fc6d",
 ]
 
 # Config flow keys
-CONF_MESH_NAME = "mesh_name"
-CONF_MESH_PASSWORD = "mesh_password"
-CONF_MESH_LTK = "mesh_ltk"
 CONF_DEVICE_ADDRESS = "device_address"
 
 # Polling interval
 DEFAULT_SCAN_INTERVAL = 60  # seconds
+
+# Gizwits protocol constants
+GIZWITS_HEADER = b"\xFF\xFF"
+
+# Command types
+CMD_MCU_INFO = 0x01
+CMD_MCU_INFO_ACK = 0x02
+CMD_CTRL = 0x03
+CMD_CTRL_ACK = 0x04
+CMD_REPORT = 0x05
+CMD_REPORT_ACK = 0x06
+CMD_HEARTBEAT = 0x07
+CMD_HEARTBEAT_ACK = 0x08
+
+# P0 action types
+ACTION_CONTROL = 0x01
+ACTION_READ_STATUS = 0x02
+ACTION_READ_STATUS_ACK = 0x03
+ACTION_REPORT_STATUS = 0x04
 
 # Hardness units
 HARDNESS_UNITS = {

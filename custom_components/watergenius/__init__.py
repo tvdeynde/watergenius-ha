@@ -1,7 +1,7 @@
 """WaterGenius Water Softener integration for Home Assistant.
 
-Connects to WaterGenius water softener devices via Bluetooth (Telink mesh)
-to read sensor data and provide basic controls.
+Connects to WaterGenius water softener devices via Bluetooth using
+the Gizwits GAgent BLE protocol to read sensor data and provide controls.
 """
 
 from __future__ import annotations
@@ -14,16 +14,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
-from .const import (
-    CONF_DEVICE_ADDRESS,
-    CONF_MESH_LTK,
-    CONF_MESH_NAME,
-    CONF_MESH_PASSWORD,
-    DEFAULT_MESH_LTK,
-    DEFAULT_MESH_NAME,
-    DEFAULT_MESH_PASSWORD,
-    DOMAIN,
-)
+from .const import CONF_DEVICE_ADDRESS, DOMAIN
 from .coordinator import WaterGeniusCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -39,10 +30,6 @@ PLATFORMS: list[Platform] = [
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up WaterGenius from a config entry."""
     address = entry.data[CONF_DEVICE_ADDRESS]
-    mesh_name = entry.data.get(CONF_MESH_NAME, DEFAULT_MESH_NAME)
-    mesh_password = entry.data.get(CONF_MESH_PASSWORD, DEFAULT_MESH_PASSWORD)
-    mesh_ltk_hex = entry.data.get(CONF_MESH_LTK)
-    mesh_ltk = bytes.fromhex(mesh_ltk_hex) if mesh_ltk_hex else DEFAULT_MESH_LTK
 
     # Get the BLE device from HA's Bluetooth integration
     device = async_ble_device_from_address(hass, address, connectable=True)
@@ -57,9 +44,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass,
         device=device,
         device_name=device_name,
-        mesh_name=mesh_name,
-        mesh_password=mesh_password,
-        mesh_ltk=mesh_ltk,
     )
 
     # Perform initial data fetch

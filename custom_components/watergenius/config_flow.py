@@ -11,30 +11,16 @@ from homeassistant.components.bluetooth import (
     async_discovered_service_info,
 )
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
-from homeassistant.const import CONF_ADDRESS
 
 from .const import (
     CONF_DEVICE_ADDRESS,
-    CONF_MESH_NAME,
-    CONF_MESH_PASSWORD,
-    DEFAULT_MESH_NAME,
-    DEFAULT_MESH_PASSWORD,
     DOMAIN,
+    GIZWITS_MANUFACTURER_ID,
+    PRODUCT_KEYS,
     SERVICE_UUID,
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-# Known device name patterns for WaterGenius / Gizwits Telink mesh devices
-_KNOWN_NAME_PREFIXES = (
-    "watergenius",
-    "water genius",
-    "telink",
-    "gizwits",
-    "xb_",
-    "mesh",
-    "out_of_mesh",
-)
 
 # Manual entry sentinel
 _MANUAL_ENTRY = "__manual__"
@@ -44,20 +30,28 @@ def _is_potential_watergenius(info: BluetoothServiceInfoBleak) -> bool:
     """Check if a discovered BLE device could be a WaterGenius device.
 
     Matches on:
-    1. Service UUID (if the device advertises it)
-    2. Device name containing known prefixes
-    3. Any device advertising the Telink mesh service UUID
+    1. Gizwits BLE service UUID (0xABF0)
+    2. Device name starting with "XPG-GAgent" (Gizwits GAgent device)
+    3. Gizwits manufacturer ID (0x1910) with known product key in data
     """
-    # Check service UUIDs
+    # Check service UUID
     if SERVICE_UUID.lower() in [s.lower() for s in info.service_uuids]:
         return True
 
     # Check device name
     name = (info.name or "").lower().strip()
-    if name:
-        for prefix in _KNOWN_NAME_PREFIXES:
-            if prefix in name:
-                return True
+    if name.startswith("xpg-gagent"):
+        return True
+
+    # Check manufacturer data for Gizwits ID with known product key
+    if hasattr(info, "manufacturer_data"):
+        mfr_data = info.manufacturer_data.get(GIZWITS_MANUFACTURER_ID)
+        if mfr_data:
+            # Manufacturer data contains the product key
+            data_hex = bytes(mfr_data).hex()
+            for pk in PRODUCT_KEYS:
+                if pk in data_hex:
+                    return True
 
     return False
 
@@ -83,7 +77,7 @@ class WaterGeniusConfigFlow(ConfigFlow, domain=DOMAIN):
             if selected == _MANUAL_ENTRY:
                 return await self.async_step_manual()
             self._selected_address = selected
-            return await self.async_step_mesh_credentials()
+            return await self._create_entry()
 
         # Discover potential WaterGenius BLE devices
         self._discovered_devices = {}
@@ -116,16 +110,14 @@ class WaterGeniusConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             address = user_input[CONF_DEVICE_ADDRESS].strip().upper()
-            # Basic MAC address validation
-            if len(address.replace(":", "").replace("-", "")) != 12:
+            raw = address.replace(":", "").replace("-", "")
+            if len(raw) != 12:
                 errors[CONF_DEVICE_ADDRESS] = "invalid_address"
             else:
-                # Normalize to colon-separated format
-                raw = address.replace(":", "").replace("-", "")
                 self._selected_address = ":".join(
                     raw[i : i + 2] for i in range(0, 12, 2)
                 )
-                return await self.async_step_mesh_credentials()
+                return await self._create_entry()
 
         return self.async_show_form(
             step_id="manual",
@@ -144,7 +136,11 @@ class WaterGeniusConfigFlow(ConfigFlow, domain=DOMAIN):
         self, discovery_info: BluetoothServiceInfoBleak
     ) -> ConfigFlowResult:
         """Handle Bluetooth discovery."""
-        _LOGGER.debug("Discovered WaterGenius device: %s", discovery_info.address)
+        _LOGGER.debug(
+            "Discovered WaterGenius device: %s (%s)",
+            discovery_info.name,
+            discovery_info.address,
+        )
 
         await self.async_set_unique_id(discovery_info.address)
         self._abort_if_unique_id_configured()
@@ -152,47 +148,23 @@ class WaterGeniusConfigFlow(ConfigFlow, domain=DOMAIN):
         self._selected_address = discovery_info.address
         self._discovered_devices[discovery_info.address] = discovery_info
 
-        return await self.async_step_mesh_credentials()
+        return await self._create_entry()
 
-    async def async_step_mesh_credentials(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Handle mesh credentials step."""
-        errors: dict[str, str] = {}
+    async def _create_entry(self) -> ConfigFlowResult:
+        """Create the config entry for the selected device."""
+        address = self._selected_address
+        if not address:
+            return self.async_abort(reason="no_devices_found")
 
-        if user_input is not None:
-            mesh_name = user_input.get(CONF_MESH_NAME, DEFAULT_MESH_NAME)
-            mesh_password = user_input.get(CONF_MESH_PASSWORD, DEFAULT_MESH_PASSWORD)
+        await self.async_set_unique_id(address)
+        self._abort_if_unique_id_configured()
 
-            address = self._selected_address
-            if not address:
-                return self.async_abort(reason="no_devices_found")
+        info = self._discovered_devices.get(address)
+        device_name = (info.name if info else None) or "WaterGenius"
 
-            await self.async_set_unique_id(address)
-            self._abort_if_unique_id_configured()
-
-            # Determine device name from discovery info
-            info = self._discovered_devices.get(address)
-            device_name = (info.name if info else None) or "WaterGenius"
-
-            return self.async_create_entry(
-                title=device_name,
-                data={
-                    CONF_DEVICE_ADDRESS: address,
-                    CONF_MESH_NAME: mesh_name,
-                    CONF_MESH_PASSWORD: mesh_password,
-                },
-            )
-
-        return self.async_show_form(
-            step_id="mesh_credentials",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_MESH_NAME, default=DEFAULT_MESH_NAME): str,
-                    vol.Required(
-                        CONF_MESH_PASSWORD, default=DEFAULT_MESH_PASSWORD
-                    ): str,
-                }
-            ),
-            errors=errors,
+        return self.async_create_entry(
+            title=device_name,
+            data={
+                CONF_DEVICE_ADDRESS: address,
+            },
         )
