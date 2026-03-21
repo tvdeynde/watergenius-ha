@@ -114,6 +114,8 @@ class GizwitsBleConnection:
         self._sn: int = 0
         self._status_callback: Callable[[bytes], None] | None = None
         self._receive_buffer: bytearray = bytearray()
+        self._notify_uuid: str = NOTIFY_UUID
+        self._write_uuid: str = WRITE_UUID
 
     @property
     def is_connected(self) -> bool:
@@ -148,9 +150,73 @@ class GizwitsBleConnection:
                 self._device.address,
             )
 
+            # Log all available services and characteristics for debugging
+            for service in self._client.services:
+                _LOGGER.info(
+                    "Service: %s (UUID: %s)", service.description, service.uuid
+                )
+                for char in service.characteristics:
+                    props = ", ".join(char.properties)
+                    _LOGGER.info(
+                        "  Characteristic: %s (UUID: %s) [%s]",
+                        char.description,
+                        char.uuid,
+                        props,
+                    )
+
+            # Find the notify characteristic dynamically
+            notify_char = None
+            write_char = None
+            for service in self._client.services:
+                if "abf0" in service.uuid.lower():
+                    for char in service.characteristics:
+                        if "notify" in char.properties:
+                            notify_char = char.uuid
+                            _LOGGER.info("Found notify characteristic: %s", char.uuid)
+                        if "write-without-response" in char.properties or "write" in char.properties:
+                            write_char = char.uuid
+                            _LOGGER.info("Found write characteristic: %s", char.uuid)
+
+            # If not found under ABF0, search all services
+            if not notify_char:
+                for service in self._client.services:
+                    for char in service.characteristics:
+                        if "notify" in char.properties:
+                            notify_char = char.uuid
+                            _LOGGER.info(
+                                "Found notify characteristic (fallback): %s in service %s",
+                                char.uuid,
+                                service.uuid,
+                            )
+                            break
+                    if notify_char:
+                        break
+
+            if not write_char:
+                for service in self._client.services:
+                    for char in service.characteristics:
+                        if "write-without-response" in char.properties or "write" in char.properties:
+                            write_char = char.uuid
+                            _LOGGER.info(
+                                "Found write characteristic (fallback): %s in service %s",
+                                char.uuid,
+                                service.uuid,
+                            )
+                            break
+                    if write_char:
+                        break
+
+            if not notify_char:
+                _LOGGER.error("No notify characteristic found on device!")
+                await self.disconnect()
+                return False
+
+            self._notify_uuid = notify_char
+            self._write_uuid = write_char or WRITE_UUID
+
             # Subscribe to notifications
-            await self._client.start_notify(NOTIFY_UUID, self._handle_notification)
-            _LOGGER.debug("Subscribed to notifications on %s", NOTIFY_UUID)
+            await self._client.start_notify(self._notify_uuid, self._handle_notification)
+            _LOGGER.info("Subscribed to notifications on %s", self._notify_uuid)
 
             # Send heartbeat to verify communication
             await asyncio.sleep(0.5)
@@ -226,7 +292,7 @@ class GizwitsBleConnection:
         packet = _build_packet(cmd, sn, payload)
         _LOGGER.debug("Sending: cmd=0x%02X sn=%d data=%s", cmd, sn, packet.hex())
 
-        await self._client.write_gatt_char(WRITE_UUID, packet, response=False)
+        await self._client.write_gatt_char(self._write_uuid, packet, response=False)
 
     async def _send_heartbeat(self) -> None:
         """Send a heartbeat ping to the device."""
