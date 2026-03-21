@@ -8,7 +8,10 @@ from datetime import timedelta
 
 from bleak.backends.device import BLEDevice
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.helpers.update_coordinator import (
+    DataUpdateCoordinator,
+    UpdateFailed,
+)
 
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 from .gizwits_ble import GizwitsBleConnection
@@ -39,9 +42,10 @@ class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]
         self._data = WaterGeniusDeviceData()
         self._reconnect_attempts = 0
         self._max_reconnect_attempts = 5
+        self._got_data = False
 
-        # Set up status callback
-        self._ble.set_status_callback(self._handle_status)
+        # Set up data callback
+        self._ble.set_status_callback(self._handle_data_dump)
 
     @property
     def address(self) -> str:
@@ -53,76 +57,112 @@ class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]
         """Return the device name."""
         return self._device_name
 
-    def _handle_status(self, payload: bytes) -> None:
-        """Handle incoming status report from the device.
+    def _handle_data_dump(self, data: bytes) -> None:
+        """Handle incoming data dump from the device.
 
-        Parses the p0 status payload and updates device data.
+        The device sends its complete state as a raw binary dump.
+        We need to find the data point values within this dump.
+
+        The exact byte offsets need to be determined by comparing
+        known values from the phone app with the binary data.
+        For now, we log the data for analysis and attempt parsing.
         """
-        _LOGGER.debug("Status payload (%d bytes): %s", len(payload), payload.hex())
+        _LOGGER.info("Received data dump (%d bytes)", len(data))
 
-        if not payload:
-            return
+        # Try to parse the data dump
+        self._parse_data_dump(data)
+        self._got_data = True
 
-        self._parse_status_payload(payload)
-
-        # Schedule an HA state update
+        # Schedule HA state update
         self.async_set_updated_data(self._data)
 
-    def _parse_status_payload(self, payload: bytes) -> None:
-        """Parse a Gizwits p0 status payload into data point values.
+    def _parse_data_dump(self, data: bytes) -> None:
+        """Parse the raw binary data dump from the device.
 
-        Data points are packed sequentially in the order defined by
-        the Gizwits product schema. The exact byte layout needs
-        validation against the real device.
+        The device sends ~900+ bytes containing configuration, status,
+        and historical data. The format is proprietary.
+
+        Based on log analysis, the dump contains:
+        - Device config (serial, product key, email)
+        - Current sensor values
+        - Historical usage data
+        - Regeneration schedules
+
+        The exact byte mapping is determined by analyzing dumps with
+        known values from the phone app. This parser will be refined
+        as we identify more data points.
+
+        For now, we attempt to find known patterns and extract values.
         """
-        if not payload:
+        if len(data) < 200:
+            _LOGGER.debug("Data dump too short (%d bytes), skipping", len(data))
             return
 
-        # Data points in expected order in the status payload.
-        # This ordering is based on the APK's data point definitions.
-        dp_order = [
-            ("g_uiHardness", 2),
-            ("g_uiHardnessOut", 2),
-            ("g_ucWaterHdUintSetUSER", 1),
-            ("g_ucRegenStatus", 2),
-            ("g_ulFlowCurrent", 4),
-            ("g_ulRemainCap", 4),
-            ("g_ulRegenFlowSet", 4),
-            ("g_ucCaCO3Total", 4),
-            ("g_ucCurrentSaltLevel", 1),
-            ("g_usEstDaysToNext", 2),
-            ("g_uiDailyWaterUsageAvg", 2),
-            ("g_ucWeekRegenFlag", 1),
-            ("g_ucAlarm", 1),
-            ("g_ucRegenEN", 1),
-            ("g_ucAlarmOnHour", 1),
-            ("g_ucAlarmOnMin", 1),
-            ("g_ucAlarmOffHour", 1),
-            ("g_ucAlarmOffMin", 1),
-            ("g_uiRegenTimeHourMin", 2),
-            ("g_ucHolidayYear", 1),
-            ("g_ucHolidayMon", 1),
-            ("g_ucHolidayDay", 1),
-            ("g_ulERRLog0", 4),
-            ("g_ucL1Reserved1", 1),
-        ]
+        # Log key sections of the dump for analysis
+        # The data appears to have this rough structure:
+        # Bytes 0-9: Header/version info
+        # Bytes 10-37: 0xFF padding
+        # Bytes 38+: Config data (serial, product key in ASCII)
+        # After product key: Sensor values
+        # Later: Historical data, schedules
 
-        offset = 0
-        parsed = 0
-        for dp_name, length in dp_order:
-            if offset + length > len(payload):
-                break
-            self._data.raw[dp_name] = payload[offset : offset + length]
-            offset += length
-            parsed += 1
+        # Find the product key to anchor our position
+        # Product key is stored as ASCII hex in the dump
+        pk_ascii = b"1952e24e"
+        pk_pos = data.find(pk_ascii)
 
-        _LOGGER.debug(
-            "Parsed %d/%d data points from payload (%d/%d bytes used)",
-            parsed,
-            len(dp_order),
-            offset,
-            len(payload),
-        )
+        if pk_pos < 0:
+            # Try the other product key
+            pk_ascii = b"1462685633a0"
+            pk_pos = data.find(pk_ascii)
+
+        if pk_pos >= 0:
+            _LOGGER.info("Found product key at byte offset %d", pk_pos)
+            # The product key is 32 ASCII hex chars = 64 bytes
+            # Data points follow after the product key + some padding
+            after_pk = pk_pos + 64
+
+            if after_pk + 100 <= len(data):
+                sensor_area = data[after_pk:]
+                _LOGGER.info(
+                    "Sensor area (from offset %d, %d bytes): %s",
+                    after_pk,
+                    len(sensor_area),
+                    sensor_area[:200].hex(),
+                )
+                self._try_parse_sensor_area(sensor_area)
+        else:
+            _LOGGER.warning("Could not find product key anchor in data dump")
+            # Try parsing from the start with best-effort offsets
+            self._try_parse_sensor_area(data)
+
+    def _try_parse_sensor_area(self, data: bytes) -> None:
+        """Attempt to extract sensor values from the data area.
+
+        This is a best-effort parser that will be refined based on
+        comparing values with the phone app. Values are logged for
+        debugging.
+
+        Based on analysis of the data dump, after the product key
+        there's a section with 2-byte and 4-byte big-endian values
+        that likely correspond to sensor readings.
+        """
+        if len(data) < 50:
+            return
+
+        # Log candidate values at various offsets for manual correlation
+        # with the phone app
+        _LOGGER.info("=== Candidate sensor values (2-byte BE) ===")
+        for i in range(0, min(len(data) - 1, 100), 2):
+            val = int.from_bytes(data[i : i + 2], "big")
+            if 0 < val < 10000:  # Filter out obviously wrong values
+                _LOGGER.info("  offset %3d: %5d (0x%04X)", i, val, val)
+
+        _LOGGER.info("=== Candidate sensor values (4-byte BE) ===")
+        for i in range(0, min(len(data) - 3, 100), 4):
+            val = int.from_bytes(data[i : i + 4], "big")
+            if 0 < val < 1000000:
+                _LOGGER.info("  offset %3d: %7d (0x%08X)", i, val, val)
 
     async def _async_update_data(self) -> WaterGeniusDeviceData | None:
         """Fetch data from the device via BLE."""
@@ -144,48 +184,29 @@ class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]
             self._reconnect_attempts = 0
 
         try:
-            # Request fresh status from device
+            # Request fresh data from device
             await self._ble.request_status()
-            # Give the device time to respond via notification
-            await asyncio.sleep(2)
+            # Wait for the device to send its data dump via notifications
+            await asyncio.sleep(3)
         except Exception as err:
             _LOGGER.warning("Error requesting status: %s", err)
             await self._ble.disconnect()
-            raise UpdateFailed(f"Error communicating with device: {err}") from err
+            raise UpdateFailed(
+                f"Error communicating with device: {err}"
+            ) from err
 
         return self._data
 
     async def async_send_command(self, dp_name: str, value: int) -> None:
         """Send a control command to the device.
 
-        For now, this uses a simplified approach. The actual attr_flags
-        and attr_vals encoding depends on the Gizwits product schema
-        and will need refinement.
+        TODO: The exact command format for this device's proprietary
+        protocol needs to be reverse-engineered from the phone app's
+        BLE communication.
         """
-        if not self._ble.is_connected:
-            _LOGGER.error("Cannot send command: not connected")
-            return
-
-        from .gizwits_protocol import DATA_POINTS, number2bytes
-
-        dp = DATA_POINTS.get(dp_name)
-        if dp is None or not dp.writable:
-            _LOGGER.error("Cannot write to data point: %s", dp_name)
-            return
-
-        try:
-            value_bytes = number2bytes(value, dp.byte_length)
-            # Simplified: send value directly as attr_flags + attr_vals
-            # This needs refinement based on actual Gizwits schema
-            await self._ble.write_control(
-                attr_flags=b"\xFF",  # placeholder
-                attr_vals=value_bytes,
-            )
-            # Request updated status after command
-            await asyncio.sleep(1)
-            await self._ble.request_status()
-        except Exception:
-            _LOGGER.exception("Error sending command %s=%d", dp_name, value)
+        _LOGGER.warning(
+            "Control commands not yet implemented for this device protocol"
+        )
 
     async def async_shutdown(self) -> None:
         """Disconnect from the device on shutdown."""
