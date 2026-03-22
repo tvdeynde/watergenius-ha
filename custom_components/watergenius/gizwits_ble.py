@@ -19,7 +19,7 @@ from collections.abc import Callable
 from bleak import BleakClient
 from bleak.backends.device import BLEDevice
 
-from .const import NOTIFY_UUID, WRITE_UUID
+from .const import NOTIFY_UUID, SERVICE_UUID, WRITE_UUID
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,6 +28,14 @@ _BLE_CHUNK_SIZE = 128
 
 # Time window to consider packets as part of the same dump (seconds)
 _PACKET_GROUP_TIMEOUT = 1.0
+
+# Maximum reassembly buffer size (bytes). The Gizwits payload is 807 bytes
+# plus a 38-byte header = 845 bytes. We allow some headroom but cap to
+# prevent unbounded memory growth from a misbehaving or spoofed device.
+_MAX_BUFFER_SIZE = 2048
+
+# Expected WaterGenius characteristic UUID
+_EXPECTED_CHAR_UUID = "0000abf7-0000-1000-8000-00805f9b34fb"
 
 
 class GizwitsBleConnection:
@@ -70,48 +78,52 @@ class GizwitsBleConnection:
             await self._client.connect()
             self._connected = True
 
-            _LOGGER.info(
-                "Connected to WaterGenius device %s (%s)",
+            _LOGGER.debug(
+                "Connected to %s (%s)",
                 self._device.name,
                 self._device.address,
             )
 
-            # Log all services and characteristics
-            for service in self._client.services:
-                _LOGGER.debug(
-                    "Service: %s (UUID: %s)", service.description, service.uuid
-                )
-                for char in service.characteristics:
-                    props = ", ".join(char.properties)
-                    _LOGGER.debug(
-                        "  Char: %s (UUID: %s) [%s]",
-                        char.description,
-                        char.uuid,
-                        props,
-                    )
-
-            # Find the notify/write characteristic dynamically
+            # Find the notify/write characteristic, preferring the known
+            # WaterGenius UUID (ABF7) under the expected service (ABF0).
             notify_char = None
             write_char = None
+
             for service in self._client.services:
                 for char in service.characteristics:
-                    if "notify" in char.properties and not notify_char:
-                        notify_char = char.uuid
-                    if (
-                        "write-without-response" in char.properties
-                        or "write" in char.properties
-                    ) and not write_char:
-                        write_char = char.uuid
+                    # Prefer the known characteristic UUID
+                    if char.uuid.lower() == _EXPECTED_CHAR_UUID:
+                        if "notify" in char.properties:
+                            notify_char = char.uuid
+                        if (
+                            "write-without-response" in char.properties
+                            or "write" in char.properties
+                        ):
+                            write_char = char.uuid
+
+            # Fallback: search under the ABF0 service
+            if not notify_char:
+                for service in self._client.services:
+                    if SERVICE_UUID.lower() not in service.uuid.lower():
+                        continue
+                    for char in service.characteristics:
+                        if "notify" in char.properties and not notify_char:
+                            notify_char = char.uuid
+                        if (
+                            "write-without-response" in char.properties
+                            or "write" in char.properties
+                        ) and not write_char:
+                            write_char = char.uuid
 
             if not notify_char:
-                _LOGGER.error("No notify characteristic found on device!")
+                _LOGGER.error("No notify characteristic found on device")
                 await self.disconnect()
                 return False
 
             self._notify_uuid = notify_char
             self._write_uuid = write_char or notify_char
-            _LOGGER.info(
-                "Using characteristic: notify=%s write=%s",
+            _LOGGER.debug(
+                "Using characteristics: notify=%s write=%s",
                 self._notify_uuid,
                 self._write_uuid,
             )
@@ -120,7 +132,6 @@ class GizwitsBleConnection:
             await self._client.start_notify(
                 self._notify_uuid, self._handle_notification
             )
-            _LOGGER.info("Subscribed to notifications")
 
             return True
 
@@ -134,18 +145,15 @@ class GizwitsBleConnection:
 
         The device sends data as multiple 128-byte chunks. We buffer them
         and flush when we receive a short packet (end of dump) or after
-        a timeout.
+        a timeout. The buffer is capped to prevent memory exhaustion.
         """
         now = time.monotonic()
         data_bytes = bytes(data)
 
-        _LOGGER.debug(
-            "BLE packet (%d bytes): %s", len(data_bytes), data_bytes.hex()
-        )
+        _LOGGER.debug("BLE packet (%d bytes)", len(data_bytes))
 
-        # Skip the initial 2-byte "ffff" handshake
+        # Skip the initial 2-byte handshake
         if len(data_bytes) <= 2:
-            _LOGGER.debug("Handshake/short packet, skipping")
             return
 
         # Check if this is a new data group or continuation
@@ -153,8 +161,21 @@ class GizwitsBleConnection:
             self._receive_buffer
             and now - self._last_packet_time > _PACKET_GROUP_TIMEOUT
         ):
-            # Previous group timed out, flush it first
             self._flush_buffer()
+
+        # Cap buffer size to prevent unbounded growth
+        if len(self._receive_buffer) + len(data_bytes) > _MAX_BUFFER_SIZE:
+            _LOGGER.warning(
+                "Buffer overflow (%d + %d > %d), dropping frame",
+                len(self._receive_buffer),
+                len(data_bytes),
+                _MAX_BUFFER_SIZE,
+            )
+            self._receive_buffer.clear()
+            if self._flush_task:
+                self._flush_task.cancel()
+                self._flush_task = None
+            return
 
         self._receive_buffer.extend(data_bytes)
         self._last_packet_time = now
@@ -183,25 +204,16 @@ class GizwitsBleConnection:
         data = bytes(self._receive_buffer)
         self._receive_buffer.clear()
 
-        _LOGGER.info(
-            "Complete data dump received (%d bytes)", len(data)
-        )
-        _LOGGER.debug("Full dump hex: %s", data.hex())
+        _LOGGER.debug("Data dump received (%d bytes)", len(data))
 
         if self._status_callback:
             self._status_callback(data)
 
     async def request_status(self) -> None:
-        """Request the device to report its current status.
-
-        The device appears to send data dumps periodically on its own
-        after connection. We can also try writing a simple request.
-        """
+        """Request the device to report its current status."""
         if not self._client or not self._client.is_connected:
             return
 
-        # The device sends data automatically after connection.
-        # Try sending a minimal request to trigger a fresh dump.
         try:
             await self._client.write_gatt_char(
                 self._write_uuid, b"\x00\x00", response=False
@@ -218,7 +230,7 @@ class GizwitsBleConnection:
         await self._client.write_gatt_char(
             self._write_uuid, data, response=False
         )
-        _LOGGER.debug("Wrote %d bytes: %s", len(data), data.hex())
+        _LOGGER.debug("Wrote %d bytes", len(data))
 
     async def disconnect(self) -> None:
         """Disconnect from the device."""

@@ -111,7 +111,12 @@ class WaterGeniusConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             address = user_input[CONF_DEVICE_ADDRESS].strip().upper()
             raw = address.replace(":", "").replace("-", "")
-            if len(raw) != 12:
+            try:
+                bytes.fromhex(raw)
+                valid = len(raw) == 12
+            except ValueError:
+                valid = False
+            if not valid:
                 errors[CONF_DEVICE_ADDRESS] = "invalid_address"
             else:
                 self._selected_address = ":".join(

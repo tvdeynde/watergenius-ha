@@ -15,7 +15,7 @@ from homeassistant.helpers.update_coordinator import (
 
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 from .gizwits_ble import GizwitsBleConnection
-from .gizwits_protocol import WaterGeniusDeviceData, bytes2number
+from .gizwits_protocol import WaterGeniusDeviceData
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]
 
     def _handle_data_dump(self, data: bytes) -> None:
         """Handle incoming data dump from the device."""
-        _LOGGER.info("Received data dump (%d bytes)", len(data))
+        _LOGGER.debug("Received data dump (%d bytes)", len(data))
         self._parse_data_dump(data)
         self.async_set_updated_data(self._data)
 
@@ -123,29 +123,19 @@ class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]
 
     def _parse_full_dump(self, data: bytes) -> None:
         """Parse the full data dump using Gizwits schema offsets."""
-        _LOGGER.info("Parsing full data dump (%d bytes)", len(data))
+        _LOGGER.debug("Parsing full data dump (%d bytes)", len(data))
 
-        payload_size = len(data) - _HEADER_SIZE
-        _LOGGER.debug("Payload size: %d bytes (expected ~807)", payload_size)
-
-        for p_offset, length, name, desc in _DATA_POINTS:
+        for p_offset, length, name, _desc in _DATA_POINTS:
             ble_offset = p_offset + _HEADER_SIZE
             if ble_offset + length <= len(data):
-                raw = data[ble_offset : ble_offset + length]
-                self._data.raw[name] = raw
-                val = bytes2number(raw)
-                _LOGGER.info("  %s = %d (offset %d, %d bytes)", name, val, p_offset, length)
-            else:
-                _LOGGER.debug("  %s: offset %d out of range", name, p_offset)
+                self._data.raw[name] = data[ble_offset : ble_offset + length]
 
-        # Also extract remaining capacity percentage
-        # This isn't a standard Gizwits data point but can be calculated
+        # Calculate remaining capacity percentage
         total = self._data.total_capacity
         remain = self._data.remaining_capacity
         if total and remain and total > 0:
             pct = int(remain * 100 / total)
             self._data.raw["remaining_capacity_pct"] = bytes([min(pct, 100)])
-            _LOGGER.info("  remaining_capacity_pct = %d%% (calculated)", pct)
 
     def _parse_periodic_update(self, data: bytes) -> None:
         """Parse the periodic status update (~42 bytes).
@@ -154,14 +144,7 @@ class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]
         mapping is still being refined, but we can extract the
         remaining capacity percentage from position 35.
         """
-        _LOGGER.info("Parsing periodic update (%d bytes): %s", len(data), data.hex())
-
-        # The periodic update appears to contain a subset of values
-        # For now, log the raw data for further analysis
-        if len(data) > 8:
-            _LOGGER.info("  Periodic header bytes: %s", data[:10].hex())
-        if len(data) > 35:
-            _LOGGER.info("  Periodic tail bytes: %s", data[30:].hex())
+        _LOGGER.debug("Parsing periodic update (%d bytes)", len(data))
 
     async def _async_update_data(self) -> WaterGeniusDeviceData | None:
         """Fetch data from the device via BLE."""
@@ -171,7 +154,7 @@ class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]
                     f"Failed to connect after {self._max_reconnect_attempts} attempts"
                 )
             self._reconnect_attempts += 1
-            _LOGGER.info(
+            _LOGGER.debug(
                 "Connecting to WaterGenius device (attempt %d/%d)",
                 self._reconnect_attempts,
                 self._max_reconnect_attempts,
