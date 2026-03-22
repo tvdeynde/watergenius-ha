@@ -15,14 +15,53 @@ from homeassistant.helpers.update_coordinator import (
 
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 from .gizwits_ble import GizwitsBleConnection
-from .gizwits_protocol import WaterGeniusDeviceData
+from .gizwits_protocol import WaterGeniusDeviceData, bytes2number
 
 _LOGGER = logging.getLogger(__name__)
 
+# BLE data = 38-byte header + 807-byte Gizwits payload
+# Header offset verified by matching product key and hardness values
+_HEADER_SIZE = 38
+
 # The device sends a full data dump ~8s after connecting.
-# We wait up to 12s on first connect to capture it.
 _INITIAL_WAIT = 12
 _POLL_WAIT = 5
+
+# Data point layout from Gizwits API schema (product_key 1952e24ea3744832aa55cf9a5050fc6d)
+# Each entry: (payload_offset, length, name, description)
+# Payload offset = position within the 807-byte Gizwits payload
+# BLE offset = payload_offset + _HEADER_SIZE
+_DATA_POINTS = [
+    (0, 1, "valve_type", "Valve type"),
+    (248, 1, "hardness_unit", "Hardness unit setting"),
+    (249, 2, "incoming_hardness", "Incoming water hardness"),
+    (251, 2, "outgoing_hardness", "Outgoing water hardness"),
+    (254, 1, "salt_setting", "Salt amount setting"),
+    (257, 2, "regen_time", "Regeneration time (hour*256+min)"),
+    (425, 2, "flow_current", "Current flow rate"),
+    (427, 4, "total_capacity", "Total capacity (L)"),
+    (431, 4, "remaining_capacity_l", "Remaining capacity (L)"),
+    (435, 2, "fill_time", "Refill time"),
+    (437, 2, "regen_times_total", "Total regeneration count"),
+    (441, 1, "next_regen_days", "Days to next regeneration"),
+    (442, 4, "last_regen_time", "Last regeneration time"),
+    (446, 4, "last2_regen_time", "2nd last regeneration time"),
+    (450, 2, "peak_flow", "Peak flow rate"),
+    (452, 4, "last_hour_vol", "Last hour volume"),
+    (456, 4, "today_vol", "Today volume"),
+    (460, 4, "total_vol", "Total volume used"),
+    (465, 2, "vacation_status", "Vacation mode status"),
+    (467, 4, "avg_daily_vol", "Average daily volume"),
+    (471, 1, "regen_enabled", "Regeneration enabled"),
+    (472, 4, "regen_status", "Regeneration status"),
+    (476, 6, "error_log", "Current error"),
+    (482, 1, "leak_count_24h", "Leak count in 24 hours"),
+    (500, 1, "salt_level", "Current salt level"),
+    (501, 4, "total_caco3", "Total CaCO3 removed (g)"),
+    (714, 4, "daily_water_usage_avg", "Average daily water usage"),
+    (794, 2, "est_days_to_next", "Estimated days to next regen"),
+    (796, 1, "week_regen_flag", "Weekly regeneration flags"),
+]
 
 
 class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]):
@@ -68,39 +107,14 @@ class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]
     def _parse_data_dump(self, data: bytes) -> None:
         """Parse the raw binary data dump.
 
-        The device sends two types of messages:
-        1. Full dump (~845+ bytes): sent ~8s after connection, contains everything
-        2. Periodic update (~42 bytes): sent every ~7s, contains key status values
+        The BLE data consists of a 38-byte header followed by the
+        807-byte Gizwits product payload. Data point positions are
+        defined by the official Gizwits product schema.
 
-        Byte offsets determined by correlating app values with binary data:
-
-        FULL DUMP (845+ bytes):
-          Offset 280: remaining_capacity_pct (1 byte, %)
-          Offset 281: current_month (1 byte)
-          Offset 282: current_day (1 byte)
-          Offset 283-284: unknown (2 bytes)
-          Offset 285: next_regen_days (1 byte)
-          Offset 286-287: flow_current (2 bytes, 0 = no flow)
-          Offset 288: incoming_hardness (1 byte, mg/L)
-          Offset 289: padding
-          Offset 290: outgoing_hardness (1 byte, mg/L)
-          Offset 291: unknown
-          Offset 292: valve_state (1 byte, 1=in service)
-          Offset 356-357: unknown (0x0190 = 400)
-          Offset 358-359: unknown (0x00C8 = 200)
-          Offset 366-367: unknown (0x006E = 110)
-          Offset 430-431: total_capacity (2 bytes, L) = 3315
-          Offset 432-433: remaining_capacity_l (2 bytes, L) = 874
-          Offset 434: regen_time_hours? (0x3C = 60)
-          Offset 524-527: total_caco3 (4 bytes, g) = 3308
-
-        PERIODIC UPDATE (42 bytes):
-          Offset 35: remaining_capacity_pct (1 byte, %)
-          Offset 36: current_month (1 byte)
-          Offset 37: current_day (1 byte)
-          Offset 38-39: counter/time (2 bytes)
+        The device also sends shorter periodic updates (~42 bytes)
+        which contain a subset of status data.
         """
-        if len(data) >= 300:
+        if len(data) >= _HEADER_SIZE + 500:
             self._parse_full_dump(data)
         elif len(data) >= 40:
             self._parse_periodic_update(data)
@@ -108,83 +122,46 @@ class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]
             _LOGGER.debug("Data too short to parse (%d bytes)", len(data))
 
     def _parse_full_dump(self, data: bytes) -> None:
-        """Parse the full data dump (~845+ bytes)."""
+        """Parse the full data dump using Gizwits schema offsets."""
         _LOGGER.info("Parsing full data dump (%d bytes)", len(data))
 
-        # Remaining capacity percentage
-        if len(data) > 280:
-            self._data.raw["remaining_capacity_pct"] = bytes([data[280]])
-            _LOGGER.info("  Remaining capacity: %d%%", data[280])
+        payload_size = len(data) - _HEADER_SIZE
+        _LOGGER.debug("Payload size: %d bytes (expected ~807)", payload_size)
 
-        # Date
-        if len(data) > 282:
-            _LOGGER.info("  Date: month=%d day=%d", data[281], data[282])
+        for p_offset, length, name, desc in _DATA_POINTS:
+            ble_offset = p_offset + _HEADER_SIZE
+            if ble_offset + length <= len(data):
+                raw = data[ble_offset : ble_offset + length]
+                self._data.raw[name] = raw
+                val = bytes2number(raw)
+                _LOGGER.info("  %s = %d (offset %d, %d bytes)", name, val, p_offset, length)
+            else:
+                _LOGGER.debug("  %s: offset %d out of range", name, p_offset)
 
-        # Next regeneration days
-        if len(data) > 285:
-            self._data.raw["next_regen_days"] = bytes([data[285]])
-            _LOGGER.info("  Next regen: %d day(s)", data[285])
-
-        # Current flow (2 bytes big-endian)
-        if len(data) > 287:
-            flow = int.from_bytes(data[286:288], "big")
-            self._data.raw["flow_current"] = data[286:288]
-            _LOGGER.info("  Flow: %d", flow)
-
-        # Incoming hardness (1 byte, mg/L)
-        if len(data) > 288:
-            self._data.raw["incoming_hardness"] = bytes([data[288]])
-            _LOGGER.info("  Incoming hardness: %d mg/L", data[288])
-
-        # Outgoing hardness (1 byte, mg/L)
-        if len(data) > 290:
-            self._data.raw["outgoing_hardness"] = bytes([data[290]])
-            _LOGGER.info("  Outgoing hardness: %d mg/L", data[290])
-
-        # Valve state
-        if len(data) > 292:
-            self._data.raw["valve_state"] = bytes([data[292]])
-            _LOGGER.info("  Valve state: %d", data[292])
-
-        # Total capacity (2 bytes at offset 430-431)
-        if len(data) > 431:
-            total_cap = int.from_bytes(data[430:432], "big")
-            self._data.raw["total_capacity"] = data[430:432]
-            _LOGGER.info("  Total capacity: %d L", total_cap)
-
-        # Remaining capacity in liters (2 bytes at offset 432-433)
-        if len(data) > 433:
-            remain_l = int.from_bytes(data[432:434], "big")
-            self._data.raw["remaining_capacity_l"] = data[432:434]
-            _LOGGER.info("  Remaining capacity: %d L", remain_l)
-
-        # Total CaCO3 removed (4 bytes at offset 524-527)
-        if len(data) > 527:
-            caco3 = int.from_bytes(data[524:528], "big")
-            self._data.raw["total_caco3"] = data[524:528]
-            _LOGGER.info("  Total CaCO3: %d g", caco3)
-
-        # Log nearby bytes for discovering more data points
-        _LOGGER.debug("  Bytes 280-300: %s", data[280:300].hex())
-        if len(data) > 440:
-            _LOGGER.debug("  Bytes 425-445: %s", data[425:445].hex())
-        if len(data) > 530:
-            _LOGGER.debug("  Bytes 520-540: %s", data[520:540].hex())
+        # Also extract remaining capacity percentage
+        # This isn't a standard Gizwits data point but can be calculated
+        total = self._data.total_capacity
+        remain = self._data.remaining_capacity
+        if total and remain and total > 0:
+            pct = int(remain * 100 / total)
+            self._data.raw["remaining_capacity_pct"] = bytes([min(pct, 100)])
+            _LOGGER.info("  remaining_capacity_pct = %d%% (calculated)", pct)
 
     def _parse_periodic_update(self, data: bytes) -> None:
-        """Parse the periodic status update (~42 bytes)."""
-        _LOGGER.info("Parsing periodic update (%d bytes)", len(data))
+        """Parse the periodic status update (~42 bytes).
 
+        These short updates contain a condensed status. The exact
+        mapping is still being refined, but we can extract the
+        remaining capacity percentage from position 35.
+        """
+        _LOGGER.info("Parsing periodic update (%d bytes): %s", len(data), data.hex())
+
+        # The periodic update appears to contain a subset of values
+        # For now, log the raw data for further analysis
+        if len(data) > 8:
+            _LOGGER.info("  Periodic header bytes: %s", data[:10].hex())
         if len(data) > 35:
-            self._data.raw["remaining_capacity_pct"] = bytes([data[35]])
-            _LOGGER.info("  Remaining capacity: %d%%", data[35])
-
-        if len(data) > 37:
-            _LOGGER.info("  Date: month=%d day=%d", data[36], data[37])
-
-        if len(data) > 39:
-            counter = int.from_bytes(data[38:40], "big")
-            _LOGGER.info("  Counter: %d", counter)
+            _LOGGER.info("  Periodic tail bytes: %s", data[30:].hex())
 
     async def _async_update_data(self) -> WaterGeniusDeviceData | None:
         """Fetch data from the device via BLE."""
@@ -206,7 +183,6 @@ class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]
 
         try:
             await self._ble.request_status()
-            # Wait longer on first fetch to capture the full dump
             wait = _INITIAL_WAIT if self._first_fetch else _POLL_WAIT
             self._first_fetch = False
             _LOGGER.debug("Waiting %d seconds for device response", wait)

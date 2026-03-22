@@ -242,6 +242,41 @@ SENSOR_DESCRIPTIONS: tuple[WaterGeniusSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda data: data.error_log,
     ),
+    WaterGeniusSensorDescription(
+        key="today_volume",
+        translation_key="today_volume",
+        name="Today Water Usage",
+        icon="mdi:water",
+        native_unit_of_measurement=UnitOfVolume.LITERS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        value_fn=lambda data: data.today_vol,
+    ),
+    WaterGeniusSensorDescription(
+        key="total_volume",
+        translation_key="total_volume",
+        name="Total Water Usage",
+        icon="mdi:water",
+        native_unit_of_measurement=UnitOfVolume.LITERS,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        value_fn=lambda data: data.total_vol,
+    ),
+    WaterGeniusSensorDescription(
+        key="peak_flow",
+        translation_key="peak_flow",
+        name="Peak Flow Rate",
+        icon="mdi:speedometer",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.peak_flow,
+    ),
+    WaterGeniusSensorDescription(
+        key="regen_count",
+        translation_key="regen_count",
+        name="Total Regeneration Count",
+        icon="mdi:counter",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: data.regen_times_total,
+    ),
 )
 
 

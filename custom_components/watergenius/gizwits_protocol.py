@@ -347,38 +347,65 @@ class WaterGeniusDeviceData:
 
     @property
     def salt_level(self) -> int | None:
-        return None  # TODO: find in binary dump
+        return self.get_number("salt_level")
 
     @property
     def days_to_next_regen(self) -> int | None:
-        return self.get_number("next_regen_days")
+        # Try both data points (full dump vs periodic)
+        val = self.get_number("est_days_to_next")
+        if val is None:
+            val = self.get_number("next_regen_days")
+        return val
 
     @property
     def daily_water_usage_avg(self) -> int | None:
-        return None  # TODO: find in binary dump
+        return self.get_number("daily_water_usage_avg")
 
     @property
     def alarm_active(self) -> bool | None:
-        return None  # TODO: find in binary dump
+        err = self.get_number("error_log")
+        if err is None:
+            return None
+        return err != 0
 
     @property
     def regen_enabled(self) -> bool | None:
-        return None  # TODO: find in binary dump
+        val = self.get_number("regen_enabled")
+        if val is None:
+            return None
+        return val != 0
 
     @property
     def is_regenerating(self) -> bool | None:
         vs = self.valve_state
         if vs is None:
             return None
-        return vs != 1  # 1 = in service
+        # Regen status byte 0: 0=in service, other=regenerating
+        return (vs & 0xFF) != 0
 
     @property
     def error_log(self) -> int | None:
-        return None  # TODO: find in binary dump
+        return self.get_number("error_log")
+
+    @property
+    def today_vol(self) -> int | None:
+        return self.get_number("today_vol")
+
+    @property
+    def total_vol(self) -> int | None:
+        return self.get_number("total_vol")
+
+    @property
+    def peak_flow(self) -> int | None:
+        return self.get_number("peak_flow")
+
+    @property
+    def regen_times_total(self) -> int | None:
+        return self.get_number("regen_times_total")
 
     @property
     def daily_usage_2h(self) -> list[int] | None:
-        return None  # TODO: find in binary dump
+        return None
 
     @property
     def weekly_flow_avg(self) -> list[int] | None:
