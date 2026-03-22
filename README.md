@@ -146,6 +146,16 @@ This integration was built by reverse-engineering the WaterGenius Android APK (v
 4. **Protocol analysis** — Determined the device sends raw binary dumps (not standard Gizwits serial framing)
 5. **Schema mapping** — Fetched the official 218-data-point product schema from the Gizwits API to get exact byte offsets and lengths
 
+## Security
+
+The integration includes the following hardening measures:
+
+- **Bounded BLE buffer** — the packet reassembly buffer is capped at 2KB to prevent memory exhaustion from misbehaving or spoofed BLE devices
+- **Characteristic pinning** — connects to the known WaterGenius characteristic UUID (`0xABF7`) rather than accepting any writable/notifiable characteristic on the device
+- **Minimal logging** — sensor telemetry and raw BLE payloads are only logged at `debug` level; no sensitive household data appears in default logs
+- **MAC address validation** — manual address entry validates hexadecimal format
+- **No cloud or network exposure** — all communication is local BLE; no outbound connections, no authentication secrets stored
+
 ## Troubleshooting
 
 ### Device not found
@@ -175,7 +185,7 @@ logger:
     custom_components.watergenius: debug
 ```
 
-This logs raw BLE packets and parsed data point values.
+This logs raw BLE packets and parsed data point values — useful for diagnosing connection or data issues.
 
 ## Known Limitations
 
