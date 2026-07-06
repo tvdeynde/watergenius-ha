@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import timedelta
 
 from bleak.backends.device import BLEDevice
+from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
@@ -24,8 +24,8 @@ _LOGGER = logging.getLogger(__name__)
 _HEADER_SIZE = 38
 
 # The device sends a full data dump ~8s after connecting.
-_INITIAL_WAIT = 12
-_POLL_WAIT = 5
+_INITIAL_WAIT = 15
+_POLL_WAIT = 6
 
 # Data point layout from Gizwits API schema (product_key 1952e24ea3744832aa55cf9a5050fc6d)
 # Each entry: (payload_offset, length, name, description)
@@ -84,9 +84,8 @@ class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]
         self._device_name = device_name
         self._ble = GizwitsBleConnection(device)
         self._data = WaterGeniusDeviceData()
-        self._reconnect_attempts = 0
-        self._max_reconnect_attempts = 5
         self._first_fetch = True
+        self._last_dump: bytes | None = None
 
         self._ble.set_status_callback(self._handle_data_dump)
 
@@ -98,9 +97,16 @@ class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]
     def device_name(self) -> str:
         return self._device_name
 
+    @property
+    def last_dump(self) -> bytes | None:
+        """Return the most recent full data dump (for diagnostics)."""
+        return self._last_dump
+
     def _handle_data_dump(self, data: bytes) -> None:
         """Handle incoming data dump from the device."""
         _LOGGER.debug("Received data dump (%d bytes)", len(data))
+        if len(data) >= _HEADER_SIZE + 500:
+            self._last_dump = data
         self._parse_data_dump(data)
         self.async_set_updated_data(self._data)
 
@@ -149,27 +155,30 @@ class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]
     async def _async_update_data(self) -> WaterGeniusDeviceData | None:
         """Fetch data from the device via BLE."""
         if not self._ble.is_connected:
-            if self._reconnect_attempts >= self._max_reconnect_attempts:
-                raise UpdateFailed(
-                    f"Failed to connect after {self._max_reconnect_attempts} attempts"
-                )
-            self._reconnect_attempts += 1
-            _LOGGER.debug(
-                "Connecting to WaterGenius device (attempt %d/%d)",
-                self._reconnect_attempts,
-                self._max_reconnect_attempts,
+            # Re-resolve the BLEDevice: a cached device goes stale once the
+            # device drops out of range and comes back.
+            device = async_ble_device_from_address(
+                self.hass, self._device.address, connectable=True
             )
+            if device is None:
+                raise UpdateFailed(
+                    f"Device {self._device.address} not found by any"
+                    " connectable Bluetooth adapter"
+                )
+            self._device = device
+            self._ble.set_device(device)
             connected = await self._ble.connect()
             if not connected:
                 raise UpdateFailed("Failed to connect to WaterGenius device")
-            self._reconnect_attempts = 0
 
         try:
+            self._ble.clear_dump_event()
             await self._ble.request_status()
             wait = _INITIAL_WAIT if self._first_fetch else _POLL_WAIT
             self._first_fetch = False
-            _LOGGER.debug("Waiting %d seconds for device response", wait)
-            await asyncio.sleep(wait)
+            received = await self._ble.wait_for_dump(wait)
+            if not received:
+                _LOGGER.debug("No data dump within %d seconds", wait)
         except Exception as err:
             _LOGGER.warning("Error requesting status: %s", err)
             await self._ble.disconnect()

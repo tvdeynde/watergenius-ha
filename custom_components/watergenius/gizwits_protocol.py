@@ -310,8 +310,7 @@ class WaterGeniusDeviceData:
 
     @property
     def hardness_unit_index(self) -> int | None:
-        # TODO: find this in the binary dump
-        return 0  # mg/L for now
+        return self.get_number("hardness_unit")
 
     @property
     def valve_state(self) -> int | None:

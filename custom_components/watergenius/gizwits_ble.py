@@ -18,6 +18,7 @@ from collections.abc import Callable
 
 from bleak import BleakClient
 from bleak.backends.device import BLEDevice
+from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
 from .const import NOTIFY_UUID, SERVICE_UUID, WRITE_UUID
 
@@ -55,6 +56,9 @@ class GizwitsBleConnection:
         self._last_packet_time: float = 0
         self._flush_task: asyncio.TimerHandle | None = None
 
+        # Set whenever a complete dump has been flushed to the callback
+        self._dump_event = asyncio.Event()
+
     @property
     def is_connected(self) -> bool:
         """Return True if connected."""
@@ -71,11 +75,30 @@ class GizwitsBleConnection:
         """
         self._status_callback = callback
 
+    def set_device(self, device: BLEDevice) -> None:
+        """Replace the BLEDevice (re-resolved before each reconnect)."""
+        self._device = device
+
+    def clear_dump_event(self) -> None:
+        """Reset the dump-received event before requesting new data."""
+        self._dump_event.clear()
+
+    async def wait_for_dump(self, timeout: float) -> bool:
+        """Wait until a complete dump arrives or the timeout expires."""
+        try:
+            await asyncio.wait_for(self._dump_event.wait(), timeout)
+        except TimeoutError:
+            return False
+        return True
+
     async def connect(self) -> bool:
         """Connect to the device and subscribe to notifications."""
         try:
-            self._client = BleakClient(self._device, timeout=30.0)
-            await self._client.connect()
+            self._client = await establish_connection(
+                BleakClientWithServiceCache,
+                self._device,
+                self._device.name or self._device.address,
+            )
             self._connected = True
 
             _LOGGER.debug(
@@ -208,6 +231,7 @@ class GizwitsBleConnection:
 
         if self._status_callback:
             self._status_callback(data)
+        self._dump_event.set()
 
     async def request_status(self) -> None:
         """Request the device to report its current status."""
