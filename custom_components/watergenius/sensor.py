@@ -12,7 +12,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory, UnitOfMass, UnitOfTime, UnitOfVolume
+from homeassistant.const import EntityCategory, UnitOfTime, UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -55,22 +55,13 @@ def _regen_countdown_str(data: WaterGeniusDeviceData) -> int | None:
 
 
 def _regen_time_str(data: WaterGeniusDeviceData) -> str | None:
-    val = data.get_number("g_uiRegenTimeHourMin")
+    # Minutes since midnight (the app stores it as hour*60+minute)
+    val = data.get_number("regen_time")
     if val is None:
         return None
-    hours = val // 100
-    minutes = val % 100
+    hours = val // 60
+    minutes = val % 60
     return f"{hours:02d}:{minutes:02d}"
-
-
-def _alarm_time(hour_dp: str, min_dp: str) -> Callable[[WaterGeniusDeviceData], str | None]:
-    def _get(data: WaterGeniusDeviceData) -> str | None:
-        h = data.get_number(hour_dp)
-        m = data.get_number(min_dp)
-        if h is None or m is None:
-            return None
-        return f"{h:02d}:{m:02d}"
-    return _get
 
 
 SENSOR_DESCRIPTIONS: tuple[WaterGeniusSensorDescription, ...] = (
@@ -135,20 +126,6 @@ SENSOR_DESCRIPTIONS: tuple[WaterGeniusSensorDescription, ...] = (
         value_fn=lambda data: data.total_capacity,
     ),
     WaterGeniusSensorDescription(
-        # The device has no salt sensor: per the manual it derives the
-        # refill warning from the regeneration count and the calculated
-        # salt consumption (threshold 10/20/30 kg by model). This data
-        # point (g_ucCurrentSaltLevel) tracks that calculated
-        # consumption since the last refill, in kg.
-        key="salt_level",
-        translation_key="salt_level",
-        name="Salt Used Since Refill",
-        icon="mdi:shaker-outline",
-        native_unit_of_measurement=UnitOfMass.KILOGRAMS,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda data: data.salt_level,
-    ),
-    WaterGeniusSensorDescription(
         key="days_to_next_regen",
         translation_key="days_to_next_regen",
         name="Days to Next Regeneration",
@@ -175,15 +152,6 @@ SENSOR_DESCRIPTIONS: tuple[WaterGeniusSensorDescription, ...] = (
         value_fn=lambda data: data.total_hardness_removal,
     ),
     WaterGeniusSensorDescription(
-        key="regen_flow_setting",
-        translation_key="regen_flow_setting",
-        name="Regeneration Flow Setting",
-        icon="mdi:cog-outline",
-        native_unit_of_measurement=UnitOfVolume.LITERS,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda data: data.regen_flow_setting,
-    ),
-    WaterGeniusSensorDescription(
         key="valve_state",
         translation_key="valve_state",
         name="Valve State",
@@ -206,22 +174,6 @@ SENSOR_DESCRIPTIONS: tuple[WaterGeniusSensorDescription, ...] = (
         icon="mdi:clock-outline",
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_regen_time_str,
-    ),
-    WaterGeniusSensorDescription(
-        key="alarm_on_time",
-        translation_key="alarm_on_time",
-        name="Alarm On Time",
-        icon="mdi:alarm",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=_alarm_time("g_ucAlarmOnHour", "g_ucAlarmOnMin"),
-    ),
-    WaterGeniusSensorDescription(
-        key="alarm_off_time",
-        translation_key="alarm_off_time",
-        name="Alarm Off Time",
-        icon="mdi:alarm-off",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=_alarm_time("g_ucAlarmOffHour", "g_ucAlarmOffMin"),
     ),
     WaterGeniusSensorDescription(
         key="daily_water_usage_detail",

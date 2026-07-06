@@ -43,7 +43,7 @@ _DATA_POINTS = [
     (249, 2, "incoming_hardness", "Incoming water hardness"),
     (251, 2, "outgoing_hardness", "Outgoing water hardness"),
     (254, 1, "salt_setting", "Salt amount setting"),
-    (257, 2, "regen_time", "Regeneration time (hour*256+min)"),
+    (257, 2, "regen_time", "Regeneration time (minutes since midnight)"),
     (425, 2, "flow_current", "Current flow rate"),
     (427, 4, "total_capacity", "Total capacity (L)"),
     (431, 4, "remaining_capacity_l", "Remaining capacity (L)"),

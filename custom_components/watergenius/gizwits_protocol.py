@@ -300,13 +300,26 @@ class WaterGeniusDeviceData:
             return None
         return parse_array_data(data, element_size)
 
-    @property
-    def incoming_hardness(self) -> int | None:
-        return self.get_number("incoming_hardness")
+    def _hardness(self, dp_name: str) -> int | float | None:
+        """Return a hardness value in the configured unit.
+
+        The vendor app multiplies the raw value by 0.1 for every unit
+        except mg/L (index 0).
+        """
+        val = self.get_number(dp_name)
+        if val is None:
+            return None
+        if self.hardness_unit_index in (None, 0):
+            return val
+        return val / 10
 
     @property
-    def outgoing_hardness(self) -> int | None:
-        return self.get_number("outgoing_hardness")
+    def incoming_hardness(self) -> int | float | None:
+        return self._hardness("incoming_hardness")
+
+    @property
+    def outgoing_hardness(self) -> int | float | None:
+        return self._hardness("outgoing_hardness")
 
     @property
     def hardness_unit_index(self) -> int | None:
@@ -314,11 +327,14 @@ class WaterGeniusDeviceData:
 
     @property
     def valve_state(self) -> int | None:
-        return self.get_number("valve_state")
+        # Byte 0 of g_ucRegenStatus, per the vendor app
+        return self.get_byte_at("regen_status", 0)
 
     @property
     def regen_countdown(self) -> int | None:
-        return None  # TODO: find in binary dump
+        # Byte 1 of g_ucRegenStatus: remaining time in the current
+        # regeneration phase in seconds (app displays it as mm:ss)
+        return self.get_byte_at("regen_status", 1)
 
     @property
     def flow_current(self) -> int | None:
@@ -362,10 +378,22 @@ class WaterGeniusDeviceData:
 
     @property
     def alarm_active(self) -> bool | None:
-        err = self.get_number("error_log")
+        # The vendor app raises the "Valve State Check" alarm when
+        # byte 0 of g_ulERRLog0 equals 1
+        err = self.get_byte_at("error_log", 0)
         if err is None:
             return None
-        return err != 0
+        return err == 1
+
+    @property
+    def salt_refill_needed(self) -> bool | None:
+        # g_ucCurrentSaltLevel is a status flag, not a level: the app
+        # shows "Check Salt Level" when it is 0, "Normal operation"
+        # otherwise
+        val = self.get_number("salt_level")
+        if val is None:
+            return None
+        return val == 0
 
     @property
     def regen_enabled(self) -> bool | None:

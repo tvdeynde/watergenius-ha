@@ -42,6 +42,15 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[WaterGeniusBinarySensorDescription, ...] = (
         icon="mdi:recycle",
         value_fn=lambda data: data.is_regenerating,
     ),
+    WaterGeniusBinarySensorDescription(
+        # g_ucCurrentSaltLevel: 0 = refill salt, non-zero = salt OK
+        # (the app shows "Check Salt Level" / "Normal operation")
+        key="salt_refill_needed",
+        name="Salt Refill Needed",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        icon="mdi:shaker-outline",
+        value_fn=lambda data: data.salt_refill_needed,
+    ),
 )
 
 
