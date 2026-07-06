@@ -12,7 +12,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory, UnitOfTime, UnitOfVolume
+from homeassistant.const import EntityCategory, UnitOfMass, UnitOfTime, UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -135,11 +135,16 @@ SENSOR_DESCRIPTIONS: tuple[WaterGeniusSensorDescription, ...] = (
         value_fn=lambda data: data.total_capacity,
     ),
     WaterGeniusSensorDescription(
+        # The device has no salt sensor: per the manual it derives the
+        # refill warning from the regeneration count and the calculated
+        # salt consumption (threshold 10/20/30 kg by model). This data
+        # point (g_ucCurrentSaltLevel) tracks that calculated
+        # consumption since the last refill, in kg.
         key="salt_level",
         translation_key="salt_level",
-        name="Salt Level",
+        name="Salt Used Since Refill",
         icon="mdi:shaker-outline",
-        native_unit_of_measurement="%",
+        native_unit_of_measurement=UnitOfMass.KILOGRAMS,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda data: data.salt_level,
     ),
