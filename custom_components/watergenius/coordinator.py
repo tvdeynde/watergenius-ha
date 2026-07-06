@@ -13,7 +13,7 @@ from homeassistant.helpers.update_coordinator import (
     UpdateFailed,
 )
 
-from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
+from .const import DEFAULT_SCAN_INTERVAL, DOMAIN, PRODUCT_KEYS
 from .gizwits_ble import GizwitsBleConnection
 from .gizwits_protocol import WaterGeniusDeviceData
 
@@ -22,6 +22,12 @@ _LOGGER = logging.getLogger(__name__)
 # BLE data = 38-byte header + 807-byte Gizwits payload
 # Header offset verified by matching product key and hardness values
 _HEADER_SIZE = 38
+_FULL_DUMP_SIZE = _HEADER_SIZE + 807
+
+# Header signature: bytes 10-37 of a full dump are 0xFF padding. Used to
+# locate the frame when packet grouping merges stray chunks in front of it.
+_HEADER_PADDING = b"\xff" * 28
+_HEADER_PADDING_OFFSET = 10
 
 # The device sends a full data dump ~8s after connecting.
 _INITIAL_WAIT = 15
@@ -102,11 +108,32 @@ class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]
         """Return the most recent full data dump (for diagnostics)."""
         return self._last_dump
 
+    @staticmethod
+    def _extract_frame(data: bytes) -> bytes | None:
+        """Locate the 845-byte dump frame inside the reassembled buffer.
+
+        Packet grouping is timing-based, so stray chunks (e.g. a late
+        fragment of a previous message) can end up prepended to the
+        frame. Absolute offsets then shift and every value parses as
+        garbage. Anchor on the header's 0xFF padding signature instead
+        of trusting the buffer start.
+        """
+        idx = data.rfind(_HEADER_PADDING)
+        if idx < _HEADER_PADDING_OFFSET:
+            return None
+        start = idx - _HEADER_PADDING_OFFSET
+        frame = data[start : start + _FULL_DUMP_SIZE]
+        if len(frame) < _FULL_DUMP_SIZE:
+            return None
+        # Every full dump embeds the Gizwits product key as an ASCII
+        # string; require it as a second anchor before trusting offsets.
+        if not any(pk.encode() in frame for pk in PRODUCT_KEYS):
+            return None
+        return frame
+
     def _handle_data_dump(self, data: bytes) -> None:
         """Handle incoming data dump from the device."""
         _LOGGER.debug("Received data dump (%d bytes)", len(data))
-        if len(data) >= _HEADER_SIZE + 500:
-            self._last_dump = data
         self._parse_data_dump(data)
         self.async_set_updated_data(self._data)
 
@@ -120,8 +147,16 @@ class WaterGeniusCoordinator(DataUpdateCoordinator[WaterGeniusDeviceData | None]
         The device also sends shorter periodic updates (~42 bytes)
         which contain a subset of status data.
         """
-        if len(data) >= _HEADER_SIZE + 500:
-            self._parse_full_dump(data)
+        if len(data) >= _FULL_DUMP_SIZE:
+            frame = self._extract_frame(data)
+            if frame is None:
+                _LOGGER.debug(
+                    "No valid frame signature in %d-byte dump, skipping",
+                    len(data),
+                )
+                return
+            self._last_dump = frame
+            self._parse_full_dump(frame)
         elif len(data) >= 40:
             self._parse_periodic_update(data)
         else:
